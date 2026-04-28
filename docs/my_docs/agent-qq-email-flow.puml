@@ -1,0 +1,119 @@
+@startuml QQ Email Agent Flow
+
+skinparam backgroundColor #FEFEFE
+skinparam activity {
+    BackgroundColor White
+    ArrowColor Black
+    BorderColor Black
+}
+
+|QQChannel|
+start
+:QQChannel::listen()
+接收用户消息;
+
+|ChannelRuntimeContext|
+:process_channel_message()
+消息处理入口;
+
+|#LightBlue|消息解析|
+:parse_runtime_command()
+检查是否为控制命令;
+
+if (是控制命令?) then (是)
+    :handle_runtime_command()
+    处理 /models /model /new;
+    stop
+else (否)
+endif
+
+|#LightYellow|上下文准备|
+:build_memory_context()
+从 memory 加载相关上下文;
+
+:conversation_history_key()
+生成 sender 历史记录键;
+
+:append_sender_turn()
+添加用户消息到历史;
+
+|#LightGreen|系统提示构建|
+:build_channel_system_prompt()
+构建带 Channel 上下文的系统提示;
+
+|#LightPink|Provider 调用|
+:get_or_create_provider()
+获取或创建 Provider;
+
+:run_tool_call_loop()
+进入工具调用循环;
+
+|#LightCoral|LLM 推理|
+:Provider::chat_with_history()
+第一次模型调用;
+
+|Agent 决策|
+if (模型输出包含工具调用?) then (是)
+    :ToolDispatcher::parse_response()
+    解析工具调用;
+
+    |#LightGray|工具执行|
+    while (还有未执行的工具?) is (是)
+        :Tool::execute()
+        执行具体工具;
+
+        |composio Tool|
+        if (工具类型?) then (composio)
+            :ComposioTool::execute()
+            调用 Composio API;
+
+            |Composio API|
+            :执行 Gmail 发邮件操作;
+            :返回执行结果;
+        else (其他工具)
+            :执行其他工具;
+        endif
+
+        :Observer::record_event()
+        记录工具执行事件;
+    endwhile (否)
+
+    |#LightCoral|LLM 推理|
+    :将工具结果追加到历史;
+    :再次调用 Provider
+    生成最终回复;
+else (否)
+endif
+
+|QQChannel|
+:Channel::send()
+发送回复到 QQ;
+
+|#LightYellow|监控任务设置|
+if (需要监控收件箱?) then (是)
+    |cron_add Tool|
+    :cron_add::execute()
+    创建定时监控任务;
+
+    |ChannelRuntimeContext|
+    :schedule::add_job()
+    添加定时任务;
+
+    |定时任务循环|
+    while (每 N 分钟) is (检查邮件)
+        :ComposioTool::execute()
+        Gmail 检查新邮件;
+
+        if (有新回复?) then (是)
+            |QQChannel|
+            :Channel::send()
+            将结果发送到 QQ;
+        else (否)
+        endif
+    endwhile (任务取消)
+else (否)
+endif
+
+stop
+
+@enduml

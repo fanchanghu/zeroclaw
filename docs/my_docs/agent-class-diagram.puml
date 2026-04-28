@@ -1,0 +1,376 @@
+@startuml ZeroClaw Agent Core Class Diagram
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor White
+    ArrowColor Black
+    BorderColor Black
+}
+
+' ==================== 核心 Agent ====================
+
+class Agent {
+    - provider: Box<dyn Provider>
+    - tools: Vec<Box<dyn Tool>>
+    - tool_specs: Vec<ToolSpec>
+    - memory: Arc<dyn Memory>
+    - observer: Arc<dyn Observer>
+    - prompt_builder: SystemPromptBuilder
+    - tool_dispatcher: Box<dyn ToolDispatcher>
+    - memory_loader: Box<dyn MemoryLoader>
+    - config: AgentConfig
+    - model_name: String
+    - temperature: f64
+    - workspace_dir: PathBuf
+    - identity_config: IdentityConfig
+    - skills: Vec<Skill>
+    - skills_prompt_mode: SkillsPromptInjectionMode
+    - auto_save: bool
+    - history: Vec<ConversationMessage>
+    - classification_config: QueryClassificationConfig
+    - available_hints: Vec<String>
+    - route_model_by_hint: HashMap<String, String>
+    --
+    + builder() : AgentBuilder
+    + from_config(config: &Config) : Result<Agent>
+    + history() : &[ConversationMessage]
+    + clear_history()
+    + turn(user_message: &str) : Result<String>
+    + run_single(message: &str) : Result<String>
+    + run_interactive() : Result<()>
+    --
+    - trim_history()
+    - build_system_prompt() : Result<String>
+    - execute_tool_call(call: &ParsedToolCall) : ToolExecutionResult
+    - execute_tools(calls: &[ParsedToolCall]) : Vec<ToolExecutionResult>
+    - classify_model(user_message: &str) : String
+}
+
+class AgentBuilder {
+    - provider: Option<Box<dyn Provider>>
+    - tools: Option<Vec<Box<dyn Tool>>
+    - memory: Option<Arc<dyn Memory>>
+    - observer: Option<Arc<dyn Observer>>
+    - prompt_builder: Option<SystemPromptBuilder>
+    - tool_dispatcher: Option<Box<dyn ToolDispatcher>>
+    - memory_loader: Option<Box<dyn MemoryLoader>>
+    - config: Option<AgentConfig>
+    - model_name: Option<String>
+    - temperature: Option<f64>
+    - workspace_dir: Option<PathBuf>
+    - identity_config: Option<IdentityConfig>
+    - skills: Option<Vec<Skill>>
+    - skills_prompt_mode: Option<SkillsPromptInjectionMode>
+    - auto_save: Option<bool>
+    - classification_config: Option<QueryClassificationConfig>
+    - available_hints: Option<Vec<String>>
+    - route_model_by_hint: Option<HashMap<String, String>>
+    --
+    + new() : Self
+    + provider(provider: Box<dyn Provider>) : Self
+    + tools(tools: Vec<Box<dyn Tool>>) : Self
+    + memory(memory: Arc<dyn Memory>) : Self
+    + observer(observer: Arc<dyn Observer>) : Self
+    + prompt_builder(prompt_builder: SystemPromptBuilder) : Self
+    + tool_dispatcher(tool_dispatcher: Box<dyn ToolDispatcher>) : Self
+    + memory_loader(memory_loader: Box<dyn MemoryLoader>) : Self
+    + config(config: AgentConfig) : Self
+    + model_name(model_name: String) : Self
+    + temperature(temperature: f64) : Self
+    + workspace_dir(workspace_dir: PathBuf) : Self
+    + identity_config(identity_config: IdentityConfig) : Self
+    + skills(skills: Vec<Skill>) : Self
+    + skills_prompt_mode(skills_prompt_mode: SkillsPromptInjectionMode) : Self
+    + auto_save(auto_save: bool) : Self
+    + classification_config(classification_config: QueryClassificationConfig) : Self
+    + available_hints(available_hints: Vec<String>) : Self
+    + route_model_by_hint(route_model_by_hint: HashMap<String, String>) : Self
+    + build() : Result<Agent>
+}
+
+AgentBuilder ..> Agent : builds
+
+' ==================== Provider 层 ====================
+
+interface Provider <<trait>> {
+    + capabilities() : ProviderCapabilities
+    + convert_tools(tools: &[ToolSpec]) : ToolsPayload
+    + simple_chat(message: &str, model: &str, temperature: f64) : Result<String>
+    + chat_with_system(system_prompt: Option<&str>, message: &str, model: &str, temperature: f64) : Result<String>
+    + chat_with_history(messages: &[ChatMessage], model: &str, temperature: f64) : Result<String>
+    + chat(request: ChatRequest, model: &str, temperature: f64) : Result<ChatResponse>
+    + supports_native_tools() : bool
+    + supports_vision() : bool
+    + warmup() : Result<()>
+    + chat_with_tools(messages: &[ChatMessage], tools: &[Value], model: &str, temperature: f64) : Result<ChatResponse>
+    + supports_streaming() : bool
+    + stream_chat_with_system(system_prompt: Option<&str>, message: &str, model: &str, temperature: f64, options: StreamOptions) : BoxStream<'static, StreamResult<StreamChunk>>
+    + stream_chat_with_history(messages: &[ChatMessage], model: &str, temperature: f64, options: StreamOptions) : BoxStream<'static, StreamResult<StreamChunk>>
+}
+
+class ChatMessage {
+    + role: String
+    + content: String
+    --
+    + system(content: impl Into<String>) : ChatMessage
+    + user(content: impl Into<String>) : ChatMessage
+    + assistant(content: impl Into<String>) : ChatMessage
+    + tool(content: impl Into<String>) : ChatMessage
+}
+
+class ChatResponse {
+    + text: Option<String>
+    + tool_calls: Vec<ToolCall>
+    + usage: Option<TokenUsage>
+    + reasoning_content: Option<String>
+    --
+    + has_tool_calls() : bool
+    + text_or_empty() : &str
+}
+
+class ChatRequest<'a> {
+    + messages: &'a [ChatMessage]
+    + tools: Option<&'a [ToolSpec]>
+}
+
+class ToolCall {
+    + id: String
+    + name: String
+    + arguments: String
+}
+
+class TokenUsage {
+    + input_tokens: Option<u64>
+    + output_tokens: Option<u64>
+}
+
+class ProviderCapabilities {
+    + native_tool_calling: bool
+    + vision: bool
+}
+
+enum ConversationMessage {
+    Chat(ChatMessage)
+    AssistantToolCalls { text, tool_calls, reasoning_content }
+    ToolResults(Vec<ToolResultMessage>)
+}
+
+class ToolResultMessage {
+    + tool_call_id: String
+    + content: String
+}
+
+enum ToolsPayload {
+    Gemini { function_declarations }
+    Anthropic { tools }
+    OpenAI { tools }
+    PromptGuided { instructions }
+}
+
+Provider ..> ChatRequest : uses
+Provider ..> ChatResponse : returns
+Provider ..> ChatMessage : uses
+ChatResponse *-- ToolCall
+ChatResponse *-- TokenUsage
+ConversationMessage *-- ChatMessage
+ConversationMessage *-- ToolResultMessage
+Provider ..> ToolsPayload : returns
+Provider ..> ProviderCapabilities : returns
+
+Agent o-- Provider : has
+Agent ..> ConversationMessage : maintains history
+
+' ==================== Tool 层 ====================
+
+interface Tool <<trait>> {
+    + name() : &str
+    + description() : &str
+    + parameters_schema() : Value
+    + execute(args: Value) : Result<ToolResult>
+    + spec() : ToolSpec
+}
+
+class ToolSpec {
+    + name: String
+    + description: String
+    + parameters: Value
+}
+
+class ToolResult {
+    + success: bool
+    + output: String
+    + error: Option<String>
+}
+
+Tool ..> ToolSpec : produces
+Tool ..> ToolResult : returns
+ToolSpec <-- Agent : tool_specs
+Agent o-- Tool : has many
+
+' ==================== ToolDispatcher 层 ====================
+
+interface ToolDispatcher <<trait>> {
+    + parse_response(response: &ChatResponse) : (String, Vec<ParsedToolCall>)
+    + format_results(results: &[ToolExecutionResult]) : ConversationMessage
+    + prompt_instructions(tools: &[Box<dyn Tool>]) : String
+    + to_provider_messages(history: &[ConversationMessage]) : Vec<ChatMessage>
+    + should_send_tool_specs() : bool
+}
+
+class XmlToolDispatcher {
+    + parse_xml_tool_calls(response: &str) : (String, Vec<ParsedToolCall>)
+    + tool_specs(tools: &[Box<dyn Tool>]) : Vec<ToolSpec>
+}
+
+class NativeToolDispatcher {
+}
+
+class ParsedToolCall {
+    + name: String
+    + arguments: Value
+    + tool_call_id: Option<String>
+}
+
+class ToolExecutionResult {
+    + name: String
+    + output: String
+    + success: bool
+    + tool_call_id: Option<String>
+}
+
+ToolDispatcher <|.. XmlToolDispatcher
+ToolDispatcher <|.. NativeToolDispatcher
+ToolDispatcher ..> ParsedToolCall : produces
+ToolDispatcher ..> ToolExecutionResult : formats
+Agent o-- ToolDispatcher : has
+
+' ==================== Memory 层 ====================
+
+interface Memory <<trait>> {
+    + name() : &str
+    + store(key: &str, content: &str, category: MemoryCategory, session_id: Option<&str>) : Result<()>
+    + recall(query: &str, limit: usize, session_id: Option<&str>) : Result<Vec<MemoryEntry>>
+    + get(key: &str) : Result<Option<MemoryEntry>>
+    + list(category: Option<&MemoryCategory>, session_id: Option<&str>) : Result<Vec<MemoryEntry>>
+    + forget(key: &str) : Result<bool>
+    + count() : Result<usize>
+    + health_check() : bool
+}
+
+class MemoryEntry {
+    + id: String
+    + key: String
+    + content: String
+    + category: MemoryCategory
+    + timestamp: String
+    + session_id: Option<String>
+    + score: Option<f64>
+}
+
+enum MemoryCategory {
+    Core
+    Daily
+    Conversation
+    Custom(String)
+}
+
+interface MemoryLoader <<trait>> {
+    + load_context(memory: &dyn Memory, query: &str) : Result<String>
+}
+
+class DefaultMemoryLoader {
+    - top_k: usize
+    - min_relevance: f64
+}
+
+MemoryLoader <|.. DefaultMemoryLoader
+Agent o-- Memory : has
+Agent o-- MemoryLoader : has
+Memory ..> MemoryEntry : returns
+Memory ..> MemoryCategory : uses
+
+' ==================== Observability 层 ====================
+
+interface Observer <<trait>> {
+    + record_event(event: &ObserverEvent)
+}
+
+class ObserverEvent {
+}
+
+Agent o-- Observer : has
+
+' ==================== 配置层 ====================
+
+class AgentConfig {
+    + max_history_messages: usize
+    + max_tool_iterations: usize
+    + parallel_tools: bool
+    + tool_dispatcher: String
+}
+
+class IdentityConfig {
+}
+
+class QueryClassificationConfig {
+    + enabled: bool
+    + rules: Vec<ClassificationRule>
+}
+
+class ClassificationRule {
+    + hint: String
+    + keywords: Vec<String>
+    + patterns: Vec<String>
+    + min_length: Option<usize>
+    + max_length: Option<usize>
+    + priority: i32
+}
+
+class Skill {
+}
+
+enum SkillsPromptInjectionMode {
+}
+
+Agent *-- AgentConfig
+Agent *-- IdentityConfig
+Agent *-- QueryClassificationConfig
+Agent *-- Skill
+Agent ..> SkillsPromptInjectionMode : uses
+
+' ==================== 关系汇总 ====================
+
+note right of Agent
+  **核心协调者 (Facade)**
+  - 组装系统提示
+  - 管理对话历史
+  - 调用模型推理
+  - 执行工具调用
+  - 维护记忆上下文
+end note
+
+note right of Provider
+  **模型提供商抽象**
+  支持: OpenAI, Anthropic,
+  Gemini, OpenRouter, etc.
+end note
+
+note right of Tool
+  **工具抽象**
+  支持: shell, file, browser,
+  memory, composio, etc.
+end note
+
+note right of Memory
+  **记忆存储抽象**
+  支持: markdown, sqlite,
+  vector DB (with embeddings)
+end note
+
+note bottom of ToolDispatcher
+  **工具调用协议适配**
+  - Native: OpenAI/Anthropic 原生格式
+  - XML: 兼容更多模型的文本格式
+end note
+
+@enduml
