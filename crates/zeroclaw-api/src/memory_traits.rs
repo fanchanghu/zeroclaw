@@ -428,6 +428,54 @@ pub trait Memory: Send + Sync + crate::attribution::Attributable {
     }
 }
 
+/// Report produced by a governance pass.
+#[derive(Debug, Clone, Default)]
+pub struct GovernanceReport {
+    pub archived_memory_files: u64,
+    pub archived_session_files: u64,
+    pub purged_memory_archives: u64,
+    pub purged_session_archives: u64,
+    pub pruned_conversation_rows: u64,
+}
+
+impl GovernanceReport {
+    pub fn total_actions(&self) -> u64 {
+        self.archived_memory_files
+            + self.archived_session_files
+            + self.purged_memory_archives
+            + self.purged_session_archives
+            + self.pruned_conversation_rows
+    }
+}
+
+/// High-level memory lifecycle policy.
+/// Implemented by strategy objects that wrap one or more `Memory` backends.
+#[async_trait]
+pub trait MemoryStrategy: Send + Sync {
+    /// Load and format relevant memory context for a conversation turn.
+    async fn load_context(
+        &self,
+        query: &str,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<String>;
+
+    /// Consolidate a conversation turn into long-term memory.
+    async fn consolidate_turn(
+        &self,
+        user_message: &str,
+        assistant_response: &str,
+        provider: &dyn crate::model_provider::ModelProvider,
+        model: &str,
+        temperature: Option<f64>,
+    ) -> anyhow::Result<()>;
+
+    /// Run memory governance (cleanup, archiving, background consolidation).
+    async fn run_governance(&self) -> anyhow::Result<GovernanceReport>;
+
+    /// Provide feedback on whether a recalled entry was helpful.
+    async fn feedback(&self, entry_id: &str, helpful: bool) -> anyhow::Result<()>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
