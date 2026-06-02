@@ -261,7 +261,7 @@ async fn e2e_multi_turn_history_fidelity() {
     );
 }
 
-/// Validates that a custom MemoryLoader injects RAG context into user
+/// Validates that a custom MemoryStrategy injects RAG context into user
 /// messages before they reach the model_provider.
 #[tokio::test]
 async fn e2e_memory_enrichment_injects_context() {
