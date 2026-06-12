@@ -2176,7 +2176,7 @@ impl Agent {
 
         for _ in 0..self.config.resolved.max_tool_iterations {
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
-            let prepared_messages = self.prepare_provider_messages(&messages).await?;
+            let mut prepared_messages = self.prepare_provider_messages(&messages).await?;
 
             // Response cache: check before LLM call (only for deterministic, text-only prompts).
             // The key must include the whole provider-visible transcript, not just the last user
@@ -2228,6 +2228,33 @@ impl Agent {
                 agent_alias: self.observer_agent_alias(),
                 turn_id: Some(turn_id.clone()),
             });
+
+            // Modifying hook before LLM call (may rewrite messages/model or cancel).
+            let mut effective_model = effective_model.clone();
+            if let Some(ref hooks) = self.hook_runner {
+                match hooks
+                    .run_before_llm_call(&mut prepared_messages, &mut effective_model)
+                    .await
+                {
+                    crate::hooks::HookResult::Continue(()) => {
+                        guard.model = effective_model.clone();
+                    }
+                    crate::hooks::HookResult::Cancel(reason) => {
+                        ::zeroclaw_log::record!(
+                            INFO,
+                            ::zeroclaw_log::Event::new(
+                                module_path!(),
+                                ::zeroclaw_log::Action::Note
+                            )
+                            .with_attrs(::serde_json::json!({"reason": reason.to_string()})),
+                            "llm call cancelled by hook"
+                        );
+                        return Err(anyhow::Error::msg(format!(
+                            "LLM call cancelled by hook: {reason}"
+                        )));
+                    }
+                }
+            }
 
             let response = match self
                 .model_provider
@@ -2487,7 +2514,7 @@ impl Agent {
             }
 
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
-            let prepared_messages = match self.prepare_provider_messages(&messages).await {
+            let mut prepared_messages = match self.prepare_provider_messages(&messages).await {
                 Ok(messages) => messages,
                 Err(error) => {
                     return Err(StreamedTurnError {
@@ -2561,6 +2588,37 @@ impl Agent {
                 agent_alias: self.observer_agent_alias(),
                 turn_id: Some(turn_id.clone()),
             });
+
+            // Modifying hook before LLM call (may rewrite messages/model or cancel).
+            let mut effective_model = effective_model.clone();
+            if let Some(ref hooks) = self.hook_runner {
+                match hooks
+                    .run_before_llm_call(&mut prepared_messages, &mut effective_model)
+                    .await
+                {
+                    crate::hooks::HookResult::Continue(()) => {
+                        guard.model = effective_model.clone();
+                    }
+                    crate::hooks::HookResult::Cancel(reason) => {
+                        ::zeroclaw_log::record!(
+                            INFO,
+                            ::zeroclaw_log::Event::new(
+                                module_path!(),
+                                ::zeroclaw_log::Action::Note
+                            )
+                            .with_attrs(::serde_json::json!({"reason": reason.to_string()})),
+                            "llm call cancelled by hook"
+                        );
+                        return Err(StreamedTurnError {
+                            error: anyhow::Error::msg(format!(
+                                "LLM call cancelled by hook: {reason}"
+                            )),
+                            committed_response,
+                            new_messages: new_msgs,
+                        });
+                    }
+                }
+            }
 
             let stream_opts = zeroclaw_providers::traits::StreamOptions::new(
                 self.model_provider.supports_streaming(),

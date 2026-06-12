@@ -1823,7 +1823,7 @@ pub async fn run_tool_call_loop(
             (model_provider, provider_name, model)
         };
 
-        let prepared_messages = if degrade_strip_images {
+        let mut prepared_messages = if degrade_strip_images {
             // Text-only fallback: replace every media marker with a
             // `[media attachment]` placeholder so no filesystem path or data
             // URI reaches the text-only provider, while surrounding text
@@ -1881,6 +1881,26 @@ pub async fn run_tool_call_loop(
             hooks.fire_llm_input(history, model).await;
         }
 
+        // Modifying hook before LLM call (may rewrite messages/model or cancel).
+        let mut active_model = active_model.to_string();
+        if let Some(hooks) = hooks {
+            match hooks
+                .run_before_llm_call(&mut prepared_messages.messages, &mut active_model)
+                .await
+            {
+                crate::hooks::HookResult::Continue(()) => {}
+                crate::hooks::HookResult::Cancel(reason) => {
+                    ::zeroclaw_log::record!(
+                        INFO,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                            .with_attrs(::serde_json::json!({"reason": reason.to_string()})),
+                        "llm call cancelled by hook"
+                    );
+                    anyhow::bail!("LLM call cancelled by hook: {reason}");
+                }
+            }
+        }
+
         // Budget enforcement — block if limit exceeded (no-op when not scoped)
         if let Some(BudgetCheck::Exceeded {
             current_usd,
@@ -1931,7 +1951,7 @@ pub async fn run_tool_call_loop(
                     active_model_provider,
                     &prepared_messages.messages,
                     request_tools,
-                    active_model,
+                    active_model.as_str(),
                     temperature,
                     cancellation_token.as_ref(),
                     on_delta.as_ref(),
@@ -1984,7 +2004,7 @@ pub async fn run_tool_call_loop(
                                         .ok()
                                         .flatten(),
                                 },
-                                active_model,
+                                active_model.as_str(),
                                 temperature,
                             )
                         )
@@ -2017,7 +2037,7 @@ pub async fn run_tool_call_loop(
                             .ok()
                             .flatten(),
                     },
-                    active_model,
+                    active_model.as_str(),
                     temperature,
                 )
             )
