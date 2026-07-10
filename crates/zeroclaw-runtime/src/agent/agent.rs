@@ -1143,11 +1143,9 @@ impl Agent {
         ))
     }
 
-    async fn append_streamed_user_message_to_history(
-        &mut self,
-        user_message: &str,
-        new_msgs: &mut Vec<ConversationMessage>,
-    ) {
+    /// Build the enriched user message for this turn (memory context + timestamp
+    /// + raw text) and return it as a `ChatMessage`.
+    async fn build_enriched_user_message(&mut self, user_message: &str) -> ChatMessage {
         // Memory context is injected once in the engine, keyed on the
         // ingress origin (agent::memory_inject).
         if self.auto_save {
@@ -1172,9 +1170,7 @@ impl Agent {
         let now = self.current_turn_datetime().format("%Y-%m-%d %H:%M:%S %Z");
         let enriched = format!("[{now}] {user_message}");
 
-        let user_msg = ConversationMessage::Chat(ChatMessage::user(enriched));
-        new_msgs.push(user_msg.clone());
-        self.history.push(user_msg);
+        ChatMessage::user(enriched)
     }
 
     pub fn set_memory_session_id(&mut self, session_id: Option<String>) {
@@ -2323,8 +2319,7 @@ impl Agent {
 
         let enriched = format!("[CURRENT DATE & TIME: {date_str}]\n\n{user_message}");
 
-        self.history
-            .push(ConversationMessage::Chat(ChatMessage::user(enriched)));
+        let user_msg = ChatMessage::user(enriched);
 
         let effective_model = self.classify_model(user_message);
 
@@ -2366,8 +2361,12 @@ impl Agent {
         // Rebuild the stored system prompt with the active provider's
         // dispatcher and use that dispatcher when preparing the provider-visible
         // transcript.
+        let mut history_with_user = self.history.clone();
+        history_with_user.push(ConversationMessage::Chat(user_msg.clone()));
         let active_dispatcher = {
-            let base_provider_messages = self.tool_dispatcher.to_provider_messages(&self.history);
+            let base_provider_messages = self
+                .tool_dispatcher
+                .to_provider_messages(&history_with_user);
             let (vision_provider_box, _degrade_strip_images) =
                 crate::agent::turn::resolve_vision_provider(
                     self.model_provider.as_ref(),
@@ -2383,7 +2382,12 @@ impl Agent {
 
         self.rebuild_system_prompt_for_dispatcher(active_dispatcher.as_ref())?;
 
-        let provider_messages = active_dispatcher.to_provider_messages(&self.history);
+        // `rebuild_system_prompt_for_dispatcher` refreshed `self.history[0]`
+        // with the active provider's tool-mode system prompt. Mirror that
+        // update into `history_with_user` without re-cloning the entire history.
+        history_with_user[0] = self.history[0].clone();
+
+        let provider_messages = active_dispatcher.to_provider_messages(&history_with_user);
         let cache_key = self.response_cache_key_for_messages(&provider_messages, &effective_model);
 
         if let (Some(cache), Some(key)) = (&self.response_cache, &cache_key) {
@@ -2392,6 +2396,8 @@ impl Agent {
                     cache_type: "response".into(),
                     tokens_saved: 0,
                 });
+                self.history
+                    .push(ConversationMessage::Chat(user_msg.clone()));
                 self.history
                     .push(ConversationMessage::Chat(ChatMessage::assistant(
                         cached.clone(),
@@ -2404,8 +2410,18 @@ impl Agent {
             });
         }
 
+        // Split the provider-visible transcript at the last user message: the
+        // prefix becomes the loop's read-only `history`, the suffix (starting
+        // at this turn's enriched user message) becomes the mutable
+        // `current_turn` working set the loop appends assistant/tool messages
+        // to. `provider_messages` already ends with the user message, so the
+        // split keeps it as `loop_current_turn[0]`.
+        let split = provider_messages
+            .iter()
+            .rposition(|m| m.role == "user")
+            .unwrap_or(provider_messages.len());
         let mut loop_history = provider_messages;
-        let mut loop_new_messages: Vec<ChatMessage> = Vec::new();
+        let mut loop_current_turn: Vec<ChatMessage> = loop_history.split_off(split);
 
         let knobs = crate::agent::loop_::LoopKnobs {
             dedup_enabled: false,
@@ -2433,69 +2449,79 @@ impl Agent {
                 Some(cost_context.clone()),
                 crate::agent::tool_receipts::scope_receipts(
                     receipt_scope.clone(),
-                    crate::agent::loop_::run_tool_call_loop(crate::agent::loop_::ToolLoop {
-                        exec: crate::agent::loop_::ResolvedAgentExecution::resolve(
-                            crate::agent::loop_::ResolvedModelAccess {
-                                model_provider: self.model_provider.as_ref(),
-                                provider_name: &self.model_provider_name,
-                                model: &effective_model,
-                                temperature: self.temperature,
-                            },
-                            crate::agent::loop_::ResolvedIo {
-                                tools_registry: &self.tools,
-                                observer: self.observer.as_ref(),
-                                silent: false,
-                                approval: self.approval_manager.as_deref(),
-                                multimodal_config: &self.multimodal_config,
-                                hooks: self.hook_runner.as_deref(),
-                                activated_tools: self.activated_tools.as_ref(),
-                                model_switch_callback: None,
-                                receipt_generator: receipt_scope
-                                    .as_ref()
-                                    .map(crate::agent::tool_receipts::ReceiptScope::generator),
-                            },
-                            crate::agent::loop_::ResolvedRuntimeKnobs {
-                                max_tool_iterations: self.config.resolved.max_tool_iterations,
-                                excluded_tools: &[],
-                                dedup_exempt_tools: &self.config.resolved.tool_call_dedup_exempt,
-                                pacing: &pacing,
-                                strict_tool_parsing: self.config.resolved.strict_tool_parsing,
-                                parallel_tools: self.config.resolved.parallel_tools,
-                                max_tool_result_chars: self.config.resolved.max_tool_result_chars,
-                                context_token_budget: self
-                                    .config
-                                    .resolved
-                                    .effective_context_budget(),
-                                knobs: &knobs,
-                            },
-                        ),
-                        history: &mut loop_history,
-                        channel_name: &self.channel_name,
-                        channel_reply_target: None,
-                        cancellation_token: None,
-                        on_delta: None,
-                        shared_budget: None,
-                        channel: None,
-                        collected_receipts: receipt_scope
-                            .as_ref()
-                            .map(crate::agent::tool_receipts::ReceiptScope::collector),
-                        event_tx: None,
-                        steering: None,
-                        new_messages_out: Some(&mut loop_new_messages),
-                        image_cache: Some(&mut self.image_cache),
-                        // Direct embedded Agent::turn call; source/transport/
-                        // trust stay placeholders, not yet stamped at the edge.
-                        memory: Some(crate::agent::memory_inject::TurnMemory {
-                            handle: self.memory.as_ref(),
-                            query: user_message.to_string(),
-                            sessions: vec![self.memory_session_id.clone()],
-                            suppress: false,
-                            cfg: self.memory_inject_cfg,
-                        }),
-                        ingress: zeroclaw_api::ingress::IngressContext::agent_direct(),
-                        agent_alias: agent_alias_for_loop.as_deref(),
-                        turn_id: &turn_id,
-                    }),
+                    crate::agent::loop_::run_tool_call_loop_with_current_turn(
+                        crate::agent::loop_::ToolLoopWithCurrentTurn {
+                            exec: crate::agent::loop_::ResolvedAgentExecution::resolve(
+                                crate::agent::loop_::ResolvedModelAccess {
+                                    model_provider: self.model_provider.as_ref(),
+                                    provider_name: &self.model_provider_name,
+                                    model: &effective_model,
+                                    temperature: self.temperature,
+                                },
+                                crate::agent::loop_::ResolvedIo {
+                                    tools_registry: &self.tools,
+                                    observer: self.observer.as_ref(),
+                                    silent: false,
+                                    approval: self.approval_manager.as_deref(),
+                                    multimodal_config: &self.multimodal_config,
+                                    hooks: self.hook_runner.as_deref(),
+                                    activated_tools: self.activated_tools.as_ref(),
+                                    model_switch_callback: Some(
+                                        crate::agent::loop_::get_model_switch_state(),
+                                    ),
+                                    receipt_generator: receipt_scope
+                                        .as_ref()
+                                        .map(crate::agent::tool_receipts::ReceiptScope::generator),
+                                },
+                                crate::agent::loop_::ResolvedRuntimeKnobs {
+                                    max_tool_iterations: self.config.resolved.max_tool_iterations,
+                                    excluded_tools: &[],
+                                    dedup_exempt_tools: &self
+                                        .config
+                                        .resolved
+                                        .tool_call_dedup_exempt,
+                                    pacing: &pacing,
+                                    strict_tool_parsing: self.config.resolved.strict_tool_parsing,
+                                    parallel_tools: self.config.resolved.parallel_tools,
+                                    max_tool_result_chars: self
+                                        .config
+                                        .resolved
+                                        .max_tool_result_chars,
+                                    context_token_budget: self
+                                        .config
+                                        .resolved
+                                        .effective_context_budget(),
+                                    knobs: &knobs,
+                                },
+                            ),
+                            history: &mut loop_history,
+                            current_turn: &mut loop_current_turn,
+                            channel_name: &self.channel_name,
+                            channel_reply_target: None,
+                            cancellation_token: None,
+                            on_delta: None,
+                            shared_budget: None,
+                            channel: None,
+                            collected_receipts: receipt_scope
+                                .as_ref()
+                                .map(crate::agent::tool_receipts::ReceiptScope::collector),
+                            event_tx: None,
+                            steering: None,
+                            image_cache: Some(&mut self.image_cache),
+                            // Direct embedded Agent::turn call; source/transport/
+                            // trust stay placeholders, not yet stamped at the edge.
+                            memory: Some(crate::agent::memory_inject::TurnMemory {
+                                handle: self.memory.as_ref(),
+                                query: user_message.to_string(),
+                                sessions: vec![self.memory_session_id.clone()],
+                                suppress: false,
+                                cfg: self.memory_inject_cfg,
+                            }),
+                            ingress: zeroclaw_api::ingress::IngressContext::agent_direct(),
+                            agent_alias: agent_alias_for_loop.as_deref(),
+                            turn_id: &turn_id,
+                        },
+                    ),
                 ),
             )
             .await;
@@ -2509,15 +2535,12 @@ impl Agent {
             guard.total_output_tokens = usage.output_tokens;
             guard.saw_usage = true;
         }
-        // Replay the loop's transcript additions into the conversation
-        // history BEFORE propagating any loop error: rounds that already
-        // executed carry side effects (tools ran), and the pre-consolidation
-        // engine pushed them into `self.history` incrementally per iteration,
-        // so they survived a later-iteration provider failure. The loop's
-        // `new_messages_out` append-log is populated on error exits too;
-        // `replay_loop_messages` reverses the loop's provider encodings back
-        // into structured `ConversationMessage`s.
-        for replayed in Self::replay_loop_messages(&loop_new_messages) {
+        // Replay the loop's current turn into the conversation history BEFORE
+        // propagating any loop error: rounds that already executed carry side
+        // effects (tools ran), and the split-history engine keeps them in
+        // `loop_current_turn` on error exits too; `replay_loop_messages` reverses
+        // the loop's provider encodings back into structured `ConversationMessage`s.
+        for replayed in Self::replay_loop_messages(&loop_current_turn) {
             self.history.push(replayed);
         }
         let response = loop_result?;
@@ -2525,11 +2548,12 @@ impl Agent {
         let response = self.append_receipts_block(response, receipt_scope.as_ref());
 
         // Store in the response cache only when the turn was a single
-        // tool-free exchange (exactly one assistant message), mirroring the
-        // old "no tool calls" put condition.
+        // tool-free exchange (user message + exactly one assistant message),
+        // mirroring the old "no tool calls" put condition.
         if let (Some(cache), Some(key)) = (&self.response_cache, &cache_key)
-            && loop_new_messages.len() == 1
-            && loop_new_messages[0].role == "assistant"
+            && loop_current_turn.len() == 2
+            && loop_current_turn[0].role == "user"
+            && loop_current_turn[1].role == "assistant"
         {
             #[allow(clippy::cast_possible_truncation)]
             let _ = cache.put(key, &effective_model, &response, usage.output_tokens as u32);
@@ -2628,9 +2652,7 @@ impl Agent {
                 )));
         }
 
-        let mut new_msgs: Vec<ConversationMessage> = Vec::new();
-        self.append_streamed_user_message_to_history(user_message, &mut new_msgs)
-            .await;
+        let user_msg = self.build_enriched_user_message(user_message).await;
 
         // `effective_model` is `mut` so a `model_switch` requested mid-turn
         // (handled in the round loop's `ModelSwitchRequested` arm via
@@ -2670,11 +2692,16 @@ impl Agent {
         // ── Per-turn active-provider resolution and prompt refresh (#8054 Surface 2) ──
         // The agent was built against the base provider, but a multimodal turn
         // may route to a vision provider with different native-tool support.
-        // Rebuild the stored system prompt if the active provider's tool mode
-        // differs from the prompt's current claim, and use the active provider's
-        // dispatcher when preparing the provider-visible transcript.
+        // To make vision routing see this turn's user message (which may carry
+        // `[IMAGE:...]` markers), resolve against a temporary transcript that
+        // includes the user message, then rebuild the stored system prompt with
+        // that provider's dispatcher.
+        let mut history_with_user = self.history.clone();
+        history_with_user.push(ConversationMessage::Chat(user_msg.clone()));
         let active_dispatcher = {
-            let base_provider_messages = self.tool_dispatcher.to_provider_messages(&self.history);
+            let base_provider_messages = self
+                .tool_dispatcher
+                .to_provider_messages(&history_with_user);
             let (vision_provider_box, _degrade_strip_images) =
                 crate::agent::turn::resolve_vision_provider(
                     self.model_provider.as_ref(),
@@ -2685,7 +2712,7 @@ impl Agent {
                 .map_err(|error| StreamedTurnError {
                     error,
                     committed_response: String::new(),
-                    new_messages: new_msgs.clone(),
+                    new_messages: vec![ConversationMessage::Chat(user_msg.clone())],
                 })?;
             let active_provider: &dyn ModelProvider = vision_provider_box
                 .as_deref()
@@ -2697,10 +2724,15 @@ impl Agent {
             .map_err(|error| StreamedTurnError {
                 error,
                 committed_response: String::new(),
-                new_messages: new_msgs.clone(),
+                new_messages: vec![ConversationMessage::Chat(user_msg.clone())],
             })?;
 
-        let provider_messages = active_dispatcher.to_provider_messages(&self.history);
+        // `rebuild_system_prompt_for_dispatcher` refreshed `self.history[0]`
+        // with the active provider's tool-mode system prompt. Mirror that
+        // update into `history_with_user` without re-cloning the entire history.
+        history_with_user[0] = self.history[0].clone();
+
+        let provider_messages = active_dispatcher.to_provider_messages(&history_with_user);
         let cache_key = self.response_cache_key_for_messages(&provider_messages, &effective_model);
 
         if let (Some(cache), Some(key)) = (&self.response_cache, &cache_key) {
@@ -2709,15 +2741,18 @@ impl Agent {
                     cache_type: "response".into(),
                     tokens_saved: 0,
                 });
-                let cached_msg = ConversationMessage::Chat(ChatMessage::assistant(cached.clone()));
-                new_msgs.push(cached_msg.clone());
-                self.history.push(cached_msg);
+                // The cached turn is a single assistant response appended to
+                // the seed user message. Replay the full [user, assistant] turn
+                // into history and return it as the caller-facing new messages.
+                let cache_hit_turn = vec![user_msg.clone(), ChatMessage::assistant(cached.clone())];
+                self.history
+                    .extend(Self::replay_loop_messages(&cache_hit_turn));
                 self.trim_history();
                 self.observer.record_event(&ObserverEvent::TurnComplete);
                 committed_response.push_str(&cached);
                 return Ok(StreamedTurnSuccess {
                     response: committed_response,
-                    new_messages: new_msgs,
+                    new_messages: Self::replay_loop_messages(&cache_hit_turn),
                 });
             }
             self.observer.record_event(&ObserverEvent::CacheMiss {
@@ -2725,7 +2760,18 @@ impl Agent {
             });
         }
 
+        // Split the provider-visible transcript at the last user message: the
+        // prefix becomes the loop's read-only `history`, the suffix (starting
+        // at this turn's enriched user message) becomes the mutable
+        // `current_turn` working set the loop appends assistant/tool messages
+        // to. `provider_messages` already ends with the user message, so the
+        // split keeps it as `loop_current_turn[0]`.
+        let split = provider_messages
+            .iter()
+            .rposition(|m| m.role == "user")
+            .unwrap_or(provider_messages.len());
         let mut loop_history = provider_messages;
+        let mut loop_current_turn: Vec<ChatMessage> = loop_history.split_off(split);
 
         let approval_bridge: Option<Box<dyn zeroclaw_api::channel::Channel>> =
             self.channel_handles.ask_user.as_ref().map(|handles| {
@@ -2759,6 +2805,11 @@ impl Agent {
         );
 
         // ── Round loop: one tool-call-loop run per steering round ──────────
+        // `replay_start` tracks how much of `loop_current_turn` has already
+        // been committed into `self.history`. It begins at 0 because the seed
+        // user message (and any accepted steering messages in later rounds)
+        // must be replayed exactly once when they are first appended.
+        let mut replay_start: usize = 0;
         for round in 0..self.config.resolved.max_tool_iterations {
             // Early exit if the caller cancelled this turn (e.g. user abort)
             if cancel_token
@@ -2766,114 +2817,112 @@ impl Agent {
                 .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
             {
                 let marker = crate::i18n::get_required_cli_string("turn-interrupted-by-user");
-                let interruption =
-                    ConversationMessage::Chat(ChatMessage::assistant(marker.clone()));
-                new_msgs.push(interruption.clone());
-                self.history.push(interruption);
+                loop_current_turn.push(ChatMessage::assistant(marker.clone()));
+                self.history.extend(Self::replay_loop_messages(
+                    &loop_current_turn[replay_start..],
+                ));
                 committed_response.push_str(&marker);
                 return Err(StreamedTurnError {
                     error: crate::agent::loop_::ToolLoopCancelled.into(),
                     committed_response,
-                    new_messages: new_msgs,
+                    new_messages: Self::replay_loop_messages(&loop_current_turn),
                 });
             }
 
             // Steering drain: each accepted mid-turn message becomes its own
-            // enriched user turn in both transcripts before the next round.
+            // enriched user turn in the loop's mutable `loop_current_turn` so
+            // the next provider call sees the full current-turn transcript.
             for steering_message in crate::agent::loop_::drain_steering_messages(&mut steering_rx) {
-                self.append_streamed_user_message_to_history(&steering_message, &mut new_msgs)
-                    .await;
-                if let Some(ConversationMessage::Chat(user_msg)) = new_msgs.last() {
-                    loop_history.push(user_msg.clone());
-                }
+                let steering_msg = self.build_enriched_user_message(&steering_message).await;
+                loop_current_turn.push(steering_msg);
             }
 
-            // Per-round append-log: the loop mirrors every message it adds to
-            // `loop_history` into this capture at push time, on success AND
-            // error exits — never derived from history indices, which the
-            // loop's own preflight pruning can invalidate.
-            let mut round_added: Vec<ChatMessage> = Vec::new();
+            // Per-round append-log: the loop appends assistant/tool messages
+            // directly into `loop_current_turn`.
             let loop_result = crate::agent::loop_::TOOL_LOOP_COST_TRACKING_CONTEXT
                 .scope(
                     Some(cost_context.clone()),
                     crate::agent::tool_receipts::scope_receipts(
                         receipt_scope.clone(),
-                        crate::agent::loop_::run_tool_call_loop(crate::agent::loop_::ToolLoop {
-                            exec: crate::agent::loop_::ResolvedAgentExecution::resolve(
-                                crate::agent::loop_::ResolvedModelAccess {
-                                    model_provider: self.model_provider.as_ref(),
-                                    provider_name: &self.model_provider_name,
-                                    model: &effective_model,
-                                    temperature: self.temperature,
-                                },
-                                crate::agent::loop_::ResolvedIo {
-                                    tools_registry: &self.tools,
-                                    observer: self.observer.as_ref(),
-                                    silent: true,
-                                    approval: self.approval_manager.as_deref(),
-                                    multimodal_config: &self.multimodal_config,
-                                    hooks: self.hook_runner.as_deref(),
-                                    activated_tools: self.activated_tools.as_ref(),
-                                    // Wire the `model_switch` tool through the
-                                    // unified loop so a mid-turn switch on the
-                                    // streaming/gateway path is signalled as
-                                    // `ModelSwitchRequested` and handled in the
-                                    // round loop below (#6173).
-                                    model_switch_callback: Some(
-                                        crate::agent::loop_::get_model_switch_state(),
-                                    ),
-                                    receipt_generator: receipt_scope
-                                        .as_ref()
-                                        .map(crate::agent::tool_receipts::ReceiptScope::generator),
-                                },
-                                crate::agent::loop_::ResolvedRuntimeKnobs {
-                                    max_tool_iterations: self.config.resolved.max_tool_iterations,
-                                    excluded_tools: &[],
-                                    dedup_exempt_tools: &self
-                                        .config
-                                        .resolved
-                                        .tool_call_dedup_exempt,
-                                    pacing: &pacing,
-                                    strict_tool_parsing: self.config.resolved.strict_tool_parsing,
-                                    parallel_tools: self.config.resolved.parallel_tools,
-                                    max_tool_result_chars: self
-                                        .config
-                                        .resolved
-                                        .max_tool_result_chars,
-                                    context_token_budget: self
-                                        .config
-                                        .resolved
-                                        .effective_context_budget(),
-                                    knobs: &knobs,
-                                },
-                            ),
-                            history: &mut loop_history,
-                            channel_name: &self.channel_name,
-                            channel_reply_target: None,
-                            cancellation_token: cancel_token.clone(),
-                            on_delta: None,
-                            shared_budget: None,
-                            channel: approval_bridge.as_deref(),
-                            collected_receipts: receipt_scope
-                                .as_ref()
-                                .map(crate::agent::tool_receipts::ReceiptScope::collector),
-                            event_tx: Some(event_tx.clone()),
-                            steering: None,
-                            new_messages_out: Some(&mut round_added),
-                            image_cache: Some(&mut self.image_cache),
-                            // Direct embedded Agent::turn call; source/transport/
-                            // trust stay placeholders, not yet stamped at the edge.
-                            memory: Some(crate::agent::memory_inject::TurnMemory {
-                                handle: self.memory.as_ref(),
-                                query: user_message.to_string(),
-                                sessions: vec![self.memory_session_id.clone()],
-                                suppress: false,
-                                cfg: self.memory_inject_cfg,
-                            }),
-                            ingress: zeroclaw_api::ingress::IngressContext::agent_direct(),
-                            agent_alias: agent_alias_for_loop.as_deref(),
-                            turn_id: &turn_id,
-                        }),
+                        crate::agent::loop_::run_tool_call_loop_with_current_turn(
+                            crate::agent::loop_::ToolLoopWithCurrentTurn {
+                                exec: crate::agent::loop_::ResolvedAgentExecution::resolve(
+                                    crate::agent::loop_::ResolvedModelAccess {
+                                        model_provider: self.model_provider.as_ref(),
+                                        provider_name: &self.model_provider_name,
+                                        model: &effective_model,
+                                        temperature: self.temperature,
+                                    },
+                                    crate::agent::loop_::ResolvedIo {
+                                        tools_registry: &self.tools,
+                                        observer: self.observer.as_ref(),
+                                        silent: true,
+                                        approval: self.approval_manager.as_deref(),
+                                        multimodal_config: &self.multimodal_config,
+                                        hooks: self.hook_runner.as_deref(),
+                                        activated_tools: self.activated_tools.as_ref(),
+                                        model_switch_callback: Some(
+                                            crate::agent::loop_::get_model_switch_state(),
+                                        ),
+                                        receipt_generator: receipt_scope.as_ref().map(
+                                            crate::agent::tool_receipts::ReceiptScope::generator,
+                                        ),
+                                    },
+                                    crate::agent::loop_::ResolvedRuntimeKnobs {
+                                        max_tool_iterations: self
+                                            .config
+                                            .resolved
+                                            .max_tool_iterations,
+                                        excluded_tools: &[],
+                                        dedup_exempt_tools: &self
+                                            .config
+                                            .resolved
+                                            .tool_call_dedup_exempt,
+                                        pacing: &pacing,
+                                        strict_tool_parsing: self
+                                            .config
+                                            .resolved
+                                            .strict_tool_parsing,
+                                        parallel_tools: self.config.resolved.parallel_tools,
+                                        max_tool_result_chars: self
+                                            .config
+                                            .resolved
+                                            .max_tool_result_chars,
+                                        context_token_budget: self
+                                            .config
+                                            .resolved
+                                            .effective_context_budget(),
+                                        knobs: &knobs,
+                                    },
+                                ),
+                                history: &mut loop_history,
+                                current_turn: &mut loop_current_turn,
+                                channel_name: &self.channel_name,
+                                channel_reply_target: None,
+                                cancellation_token: cancel_token.clone(),
+                                on_delta: None,
+                                shared_budget: None,
+                                channel: approval_bridge.as_deref(),
+                                collected_receipts: receipt_scope
+                                    .as_ref()
+                                    .map(crate::agent::tool_receipts::ReceiptScope::collector),
+                                event_tx: Some(event_tx.clone()),
+                                steering: None,
+                                image_cache: Some(&mut self.image_cache),
+                                // Direct embedded Agent::turn call; source/transport/
+                                // trust stay placeholders, not yet stamped at the edge.
+                                memory: Some(crate::agent::memory_inject::TurnMemory {
+                                    handle: self.memory.as_ref(),
+                                    query: user_message.to_string(),
+                                    sessions: vec![self.memory_session_id.clone()],
+                                    suppress: false,
+                                    cfg: self.memory_inject_cfg,
+                                }),
+                                ingress: zeroclaw_api::ingress::IngressContext::agent_direct(),
+                                agent_alias: agent_alias_for_loop.as_deref(),
+                                turn_id: &turn_id,
+                            },
+                        ),
                     ),
                 )
                 .await;
@@ -2888,20 +2937,25 @@ impl Agent {
                 guard.saw_usage = true;
             }
 
-            // Replay everything the loop appended this round into the
-            // conversation history and the persistence capture.
-            let single_text_exchange =
-                round == 0 && round_added.len() == 1 && round_added[0].role == "assistant";
-            for replayed in Self::replay_loop_messages(&round_added) {
-                new_msgs.push(replayed.clone());
-                self.history.push(replayed);
-            }
+            let single_text_exchange = round == 0
+                && loop_current_turn.len() == 2
+                && loop_current_turn[0].role == "user"
+                && loop_current_turn[1].role == "assistant";
+
+            // Replay only the slice appended since the last commit into the
+            // conversation history. Earlier rounds (and any steering user
+            // messages consumed before them) are already durable; replaying the
+            // full `loop_current_turn` here would duplicate them.
+            self.history.extend(Self::replay_loop_messages(
+                &loop_current_turn[replay_start..],
+            ));
+            replay_start = loop_current_turn.len();
 
             match loop_result {
                 Ok(response) => {
                     // Commit-before-drain: this round's assistant output is in
-                    // history/new_msgs (replay above) and committed_response
-                    // before any steering continuation is folded in.
+                    // history (replay above) and committed_response before any
+                    // steering continuation is folded in.
                     committed_response.push_str(&response);
                     self.trim_history();
 
@@ -2926,7 +2980,7 @@ impl Agent {
                         self.append_receipts_block(committed_response, receipt_scope.as_ref());
                     return Ok(StreamedTurnSuccess {
                         response: committed_response,
-                        new_messages: new_msgs,
+                        new_messages: Self::replay_loop_messages(&loop_current_turn),
                     });
                 }
                 Err(error) => {
@@ -2951,7 +3005,7 @@ impl Agent {
                     // assistant output (e.g. a persisted stream partial) when
                     // no prior round committed anything.
                     if committed_response.is_empty() {
-                        for replayed in Self::replay_loop_messages(&round_added) {
+                        for replayed in Self::replay_loop_messages(&loop_current_turn) {
                             if let ConversationMessage::Chat(message) = &replayed
                                 && message.role == "assistant"
                             {
@@ -2962,11 +3016,10 @@ impl Agent {
                     if crate::agent::loop_::is_tool_loop_cancelled(&error) {
                         // When the cancel arrived after event-visible
                         // streamed text, the error itself carries the
-                        // partial the loop persisted (replayed into
-                        // history/new_msgs above, and into
-                        // committed_response by the empty-committed
-                        // rebuild). Provenance, not content sniffing:
-                        // model-authored text can end with the marker
+                        // partial the loop persisted (replayed into history
+                        // above, and into committed_response by the
+                        // empty-committed rebuild). Provenance, not content
+                        // sniffing: model-authored text can end with the marker
                         // literal, so suffix-matching round_added would
                         // misfire. Synthesize the bare marker only when no
                         // interruption text was persisted this round.
@@ -2989,14 +3042,16 @@ impl Agent {
                                 let interruption = ConversationMessage::Chat(
                                     ChatMessage::assistant(marker.clone()),
                                 );
-                                new_msgs.push(interruption.clone());
+                                loop_current_turn.push(ChatMessage::assistant(marker.clone()));
+                                // The marker is appended after the round's
+                                // normal replay slice, so commit it directly.
                                 self.history.push(interruption);
                             }
                         }
                         return Err(StreamedTurnError {
                             error: crate::agent::loop_::ToolLoopCancelled.into(),
                             committed_response,
-                            new_messages: new_msgs,
+                            new_messages: Self::replay_loop_messages(&loop_current_turn),
                         });
                     }
                     // Mark the interruption only when nothing was committed —
@@ -3009,7 +3064,7 @@ impl Agent {
                     return Err(StreamedTurnError {
                         error,
                         committed_response,
-                        new_messages: new_msgs,
+                        new_messages: Self::replay_loop_messages(&loop_current_turn),
                     });
                 }
             }
@@ -3021,7 +3076,7 @@ impl Agent {
                 self.config.resolved.max_tool_iterations
             )),
             committed_response,
-            new_messages: new_msgs,
+            new_messages: Self::replay_loop_messages(&loop_current_turn),
         })
     }
 
@@ -6896,6 +6951,198 @@ mod tests {
                 .filter(|msg| msg.role == "user")
                 .any(|msg| msg.content.contains("second")),
             "second provider call must include the accepted steering user message"
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_streamed_with_steering_does_not_duplicate_history() {
+        // Regression for the split-history streaming engine: each accepted
+        // steering round appends to `loop_current_turn`, but only the newly
+        // added slice must be replayed into the durable `self.history`. If the
+        // full `loop_current_turn` is replayed every round, seed user/assistant
+        // messages appear multiple times.
+        let memory_cfg = zeroclaw_config::schema::MemoryConfig {
+            backend: "none".into(),
+            ..zeroclaw_config::schema::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            zeroclaw_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed with valid config"),
+        );
+
+        let model_provider = Box::new(StreamingSteeringModelProvider {
+            seen_messages: Arc::new(Mutex::new(Vec::new())),
+            call_count: AtomicUsize::new(0),
+            fail_on_call: None,
+            fail_chat_on_call: None,
+            fail_after_delta_on_call: None,
+            delay_chat_on_call: None,
+        });
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .model_provider(model_provider)
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        let _history_before = agent.history.len();
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<TurnEvent>(64);
+        let (steering_tx, mut steering_rx) = tokio::sync::mpsc::channel::<String>(4);
+        let handle = zeroclaw_spawn::spawn!(async move {
+            let result = agent
+                .turn_streamed_with_steering_state("first", event_tx, None, Some(&mut steering_rx))
+                .await;
+            (agent, result)
+        });
+
+        loop {
+            match event_rx.recv().await.expect("turn event should arrive") {
+                TurnEvent::Chunk { delta } if delta == "draft" => {
+                    steering_tx
+                        .send("second".into())
+                        .await
+                        .expect("steering message should enqueue");
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let (agent, outcome) = handle.await.expect("turn task should finish");
+        let outcome = outcome.expect("steered turn should succeed");
+
+        let _history_after = agent.history.len();
+
+        // Extract the committed chat messages. This is the durable transcript
+        // that matters for the no-duplicates regression.
+        let committed: Vec<_> = agent
+            .history
+            .iter()
+            .filter_map(|msg| match msg {
+                ConversationMessage::Chat(message) => {
+                    Some((message.role.as_str(), message.content.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+
+        // Build a frequency map keyed by a coarse content tag. User messages
+        // are enriched with a timestamp prefix, so match by substring.
+        let first_user_count = committed
+            .iter()
+            .filter(|(role, content)| *role == "user" && content.contains("first"))
+            .count();
+        let second_user_count = committed
+            .iter()
+            .filter(|(role, content)| *role == "user" && content.contains("second"))
+            .count();
+        let draft_assistant_count = committed
+            .iter()
+            .filter(|(role, content)| *role == "assistant" && *content == "draft")
+            .count();
+        let final_assistant_count = committed
+            .iter()
+            .filter(|(role, content)| *role == "assistant" && *content == "final")
+            .count();
+
+        assert_eq!(
+            first_user_count, 1,
+            "seed user message must appear exactly once in history"
+        );
+        assert_eq!(
+            second_user_count, 1,
+            "steering user message must appear exactly once in history"
+        );
+        assert_eq!(
+            draft_assistant_count, 1,
+            "first assistant response must appear exactly once in history"
+        );
+        assert_eq!(
+            final_assistant_count, 1,
+            "second assistant response must appear exactly once in history"
+        );
+
+        // Also assert the turn's reported new_messages are the full turn.
+        let new_chat_messages: Vec<_> = outcome
+            .new_messages
+            .iter()
+            .filter_map(|msg| match msg {
+                ConversationMessage::Chat(message) => {
+                    Some((message.role.as_str(), message.content.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            new_chat_messages.len(),
+            4,
+            "new_messages must contain four chat messages"
+        );
+        assert!(
+            new_chat_messages[0].0 == "user" && new_chat_messages[0].1.contains("first"),
+            "new_messages[0] must be the seed user message"
+        );
+        assert!(
+            new_chat_messages[1] == ("assistant", "draft"),
+            "new_messages[1] must be the first assistant response"
+        );
+        assert!(
+            new_chat_messages[2].0 == "user" && new_chat_messages[2].1.contains("second"),
+            "new_messages[2] must be the accepted steering user message"
+        );
+        assert!(
+            new_chat_messages[3] == ("assistant", "final"),
+            "new_messages[3] must be the second assistant response"
+        );
+
+        // The durable history tail must equal new_messages (modulo timestamp
+        // enrichment of user messages).
+        let tail = &committed[committed.len().saturating_sub(new_chat_messages.len())..];
+        assert_eq!(
+            tail.len(),
+            new_chat_messages.len(),
+            "durable history tail and new_messages must have same length"
+        );
+        for (actual, expected) in tail.iter().zip(new_chat_messages.iter()) {
+            assert_eq!(
+                actual.0, expected.0,
+                "durable history tail role must match new_messages"
+            );
+            if actual.0 == "user" {
+                assert!(
+                    actual.1.contains(expected.1),
+                    "durable history tail user content must contain new_messages user content"
+                );
+            } else {
+                assert_eq!(
+                    actual.1, expected.1,
+                    "durable history tail assistant content must equal new_messages"
+                );
+            }
+        }
+
+        // The regression: each turn-related message appears exactly once in the
+        // durable history. No message is duplicated across steering rounds.
+        assert_eq!(
+            first_user_count, 1,
+            "seed user message must appear exactly once in history"
+        );
+        assert_eq!(
+            second_user_count, 1,
+            "steering user message must appear exactly once in history"
+        );
+        assert_eq!(
+            draft_assistant_count, 1,
+            "first assistant response must appear exactly once in history"
+        );
+        assert_eq!(
+            final_assistant_count, 1,
+            "second assistant response must appear exactly once in history"
         );
     }
 

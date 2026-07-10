@@ -977,7 +977,6 @@ pub async fn agent_turn(
         collected_receipts: None,
         event_tx: None,
         steering: None,
-        new_messages_out: None,
         image_cache: None,
         // Origin and the per-turn memory half are threaded from the entry
         // point; source/transport/trust stay phase-1 placeholders. Real
@@ -1004,8 +1003,9 @@ pub(crate) use super::turn::{
 pub use super::turn::{
     DraftEvent, LoopKnobs, MaxIterationBehavior, ModelSwitchCallback, ModelSwitchRequested,
     PROGRESS_MIN_INTERVAL_MS, ResolvedAgentExecution, ResolvedIo, ResolvedModelAccess,
-    ResolvedRuntimeKnobs, StreamDelta, ToolLoop, ToolLoopCancelled, drain_steering_messages,
-    is_model_switch_requested, is_tool_loop_cancelled, run_tool_call_loop, scrub_credentials,
+    ResolvedRuntimeKnobs, StreamDelta, ToolLoop, ToolLoopCancelled, ToolLoopWithCurrentTurn,
+    drain_steering_messages, is_model_switch_requested, is_tool_loop_cancelled, run_tool_call_loop,
+    run_tool_call_loop_with_current_turn, scrub_credentials,
 };
 
 /// Build the tool instruction block for the system prompt so the LLM knows
@@ -1970,7 +1970,7 @@ pub async fn run(
                                 collected_receipts: None,
                                 event_tx: None,
                                 steering: None,
-                                new_messages_out: None,
+
                                 image_cache: None,
                                 // Origin is threaded from the entry point;
                                 // source/transport/trust stay phase-1
@@ -2536,7 +2536,7 @@ pub async fn run(
                                     collected_receipts: None,
                                     event_tx: None,
                                     steering: None,
-                                    new_messages_out: None,
+
                                     image_cache: None,
                                     // Origin is threaded from the entry point;
                                     // source/transport/trust stay phase-1
@@ -5175,7 +5175,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -5249,7 +5249,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -5340,7 +5340,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -5426,7 +5426,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -5503,7 +5503,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -5580,7 +5580,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -5657,7 +5657,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -5725,7 +5725,7 @@ mod tests {
                 collected_receipts: None,
                 event_tx: None,
                 steering: None,
-                new_messages_out: None,
+
                 image_cache: None,
                 memory: None,
                 ingress: ctx,
@@ -5914,7 +5914,6 @@ mod tests {
                 collected_receipts: None,
                 event_tx: None,
                 steering: None,
-                new_messages_out: None,
                 image_cache: None,
                 memory: Some(crate::agent::memory_inject::TurnMemory {
                     handle: mem,
@@ -6038,7 +6037,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -6114,7 +6113,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -6189,7 +6188,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -6348,7 +6347,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -6483,7 +6482,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: IngressContext::sub_turn(),
@@ -6638,7 +6637,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: IngressContext::sub_turn(),
@@ -6756,7 +6755,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -6929,7 +6928,7 @@ mod tests {
             collected_receipts: None,
             event_tx: Some(event_tx),
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -7035,7 +7034,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -7125,7 +7124,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -7207,7 +7206,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -7297,7 +7296,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -7390,7 +7389,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -7488,7 +7487,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -7583,7 +7582,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: IngressContext::sub_turn(),
@@ -7678,7 +7677,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: IngressContext::sub_turn(),
@@ -7778,7 +7777,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: IngressContext::sub_turn(),
@@ -7868,7 +7867,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -7965,7 +7964,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8061,7 +8060,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8143,7 +8142,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8229,7 +8228,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8310,7 +8309,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8389,7 +8388,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8471,7 +8470,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8550,7 +8549,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8628,7 +8627,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8698,7 +8697,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8769,7 +8768,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8840,7 +8839,7 @@ mod tests {
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8913,7 +8912,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -8991,7 +8990,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9081,7 +9080,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9154,7 +9153,7 @@ Done."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9230,7 +9229,7 @@ Done."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9304,7 +9303,7 @@ Done."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9379,7 +9378,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9511,7 +9510,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9594,7 +9593,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9681,7 +9680,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9791,7 +9790,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9906,7 +9905,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -9995,7 +9994,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -10095,7 +10094,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: zeroclaw_api::ingress::IngressContext::sub_turn(),
@@ -10975,7 +10974,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -11077,7 +11076,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: IngressContext::sub_turn(),
@@ -11178,7 +11177,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: IngressContext::sub_turn(),
@@ -11279,7 +11278,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: IngressContext::sub_turn(),
@@ -11435,7 +11434,7 @@ This is an example, not an invocation."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -13807,7 +13806,7 @@ Let me check the result."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -13982,7 +13981,7 @@ Let me check the result."#;
                     collected_receipts: None,
                     event_tx: None,
                     steering: None,
-                    new_messages_out: None,
+
                     image_cache: None,
                     // Phase 1: stamp Internal/Trusted. Real per-transport
                     // stamping is PR C (RFC #6971 §4).
@@ -14056,7 +14055,7 @@ Let me check the result."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -14169,7 +14168,7 @@ Let me check the result."#;
                     collected_receipts: None,
                     event_tx: None,
                     steering: None,
-                    new_messages_out: None,
+
                     image_cache: None,
                     // Phase 1: stamp Internal/Trusted. Real per-transport
                     // stamping is PR C (RFC #6971 §4).
@@ -14248,7 +14247,7 @@ Let me check the result."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             // Phase 1: stamp Internal/Trusted. Real per-transport
             // stamping is PR C (RFC #6971 §4).
@@ -14334,7 +14333,7 @@ Let me check the result."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: IngressContext::sub_turn(),
@@ -15533,7 +15532,7 @@ Let me check the result."#;
             collected_receipts: None,
             event_tx: None,
             steering: None,
-            new_messages_out: None,
+
             image_cache: None,
             memory: None,
             ingress: IngressContext::sub_turn(),

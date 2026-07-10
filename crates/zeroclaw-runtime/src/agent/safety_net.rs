@@ -482,7 +482,7 @@ async fn safety_net_thinking_never_leaks_into_draft_or_chunks() {
         collected_receipts: None,
         event_tx: None,
         steering: None,
-        new_messages_out: None,
+
         image_cache: None,
         // Phase 1: stamp Internal/Trusted. Real per-transport
         // stamping is PR C (RFC #6971 §4).
@@ -883,7 +883,7 @@ async fn safety_net_task_locals_probe_per_entry_path() {
                 collected_receipts: None,
                 event_tx: None,
                 steering: None,
-                new_messages_out: None,
+
                 image_cache: None,
                 // Phase 1: stamp Internal/Trusted. Real per-transport
                 // stamping is PR C (RFC #6971 §4).
@@ -1135,7 +1135,7 @@ async fn safety_net_agent_turn_agent_end_reports_token_totals() {
 
 // ── seam 10: turn survives in-loop history pruning ──────────────────────
 // The loop's preflight maintenance prunes `history` in place when the token
-// estimate exceeds `max_context_tokens`. `new_messages_out` (Agent::turn)
+// estimate exceeds `max_context_tokens`. The current_turn replay (Agent::turn)
 // and the streamed wrapper's per-round capture must not be derived from
 // pre-prune history indices: that panics (slice start past the shrunken
 // length) or silently persists the wrong messages.
@@ -1149,7 +1149,7 @@ async fn safety_net_turn_survives_in_loop_history_pruning() {
         ..zeroclaw_config::schema::ResolvedRuntime::default()
     };
 
-    // Agent::turn (new_messages_out path)
+    // Agent::turn (current_turn replay path)
     let calls = Arc::new(AtomicUsize::new(0));
     let mut agent = build_agent_with_runtime(
         Box::new(ScriptedProvider::new(vec![

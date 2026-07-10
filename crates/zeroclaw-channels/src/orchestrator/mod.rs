@@ -5517,7 +5517,7 @@ async fn process_channel_message_body(
                     .map(|_| tool_receipts_collector.as_ref()),
                 event_tx: None,
                 steering: None,
-                new_messages_out: None,
+
                 image_cache: None,
                 // Channel-orchestrator dispatch; source/transport/trust stay
                 // placeholders, not yet stamped at the edge.
